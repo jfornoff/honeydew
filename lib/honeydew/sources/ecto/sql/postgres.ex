@@ -4,6 +4,7 @@ if Code.ensure_loaded?(Ecto) do
     alias Honeydew.EctoSource.SQL
 
     @behaviour SQL
+    @now "(CAST(EXTRACT(epoch FROM NOW()) * 1000 AS BIGINT)"
 
     @impl true
     def integer_type do
@@ -15,6 +16,39 @@ if Code.ensure_loaded?(Ecto) do
       SQL.far_in_the_past()
       |> time_in_msecs
       |> msecs_ago
+    end
+
+    def newreserve(
+          repo,
+          schema,
+          lock_field \\ "honeydew_email_background_jobs_lock",
+          key_field \\ "id",
+          private_field \\ "honeydew_email_background_jobs_private",
+          stale_timeout \\ 1000
+        ) do
+      import Ecto.Query
+
+      lockfield = String.to_atom(lock_field)
+      keyfield = String.to_atom(key_field)
+
+      non_locked_row_subquery =
+        schema
+        |> select([r], r.id)
+        |> where(fragment("? BETWEEN 0 AND ?", ^lock_field, ^msecs_ago(stale_timeout)))
+        |> order_by([^lockfield, ^keyfield])
+        |> limit(1)
+        |> lock("FOR UPDATE SKIP LOCKED")
+
+      query =
+        from(r in schema, join: s in subquery(non_locked_row_subquery), on: s.id == r.id)
+        |> update([r],
+          set:
+            ^[
+              {lockfield, fragment(@now)}
+            ]
+        )
+
+      Ecto.Adapters.SQL.to_sql(:update_all, repo, query)
     end
 
     @impl true
